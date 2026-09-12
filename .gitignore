@@ -1,0 +1,24 @@
+# build output and the packaged release folder (the release zip carries dist/)
+build/
+dist/
+releases/
+*.log
+*.obj
+*.pdb
+
+# end-to-end scratch (ReShade binaries, captures)
+e2e/
+
+# NVIDIA NGX SDK headers: proprietary notice, not redistributed here.
+# Copy nvsdk_ngx_defs.h and nvsdk_ngx_params.h from the DLSS SDK into src/ngx/ to build.
+src/ngx/
+
+# Unity URP reference sources (Unity Companion License), kept locally for reading only
+src/*.cs
+src/urp_package.json
+
+# build artifacts never belong at the root
+/*.dll
+/*.exe
+/*.manifest
+/scan.txt
