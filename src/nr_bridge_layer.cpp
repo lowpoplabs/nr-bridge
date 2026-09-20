@@ -19,7 +19,7 @@
 #include <cstdarg>
 #include <cstring>
 
-#define BRIDGE_VERSION "0.2.1"
+#define BRIDGE_VERSION "0.3.0"
 static const char *const kLayerName = "XR_APILAYER_LOWPOPLABS_nr_bridge";
 static HMODULE g_module = nullptr;
 

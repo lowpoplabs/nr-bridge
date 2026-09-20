@@ -7,7 +7,13 @@
 // proxy is copied into each OpenVR game's plugin folder (the game's openvr_api.dll is renamed openvr_api.orig.dll)
 // and reads the same central files through HKCU\Software\LowPopLabs\nr-bridge\Home.
 //
-// Command line (also usable from scripts): --scan | --sync | --enable <exe stem> | --disable <exe stem> | --notes | --home
+// Two independent switches per game. HEADSET (Enable/Disable, --enable/--disable): the bridge itself, DLSS 5 on the eye
+// images. MONITOR (--monitor-on/--monitor-off): ReShade + the RenoDX DLSS add-on installed in the game folder, which run
+// DLSS 5 on the desktop window (DirectX 11/12) for recording; "off" parks ReShade's proxy DLL (dxgi.dll, d3d11.dll or
+// d3d12.dll) as <name>.reshade-off so it does not load, "on" puts it back. The installer never installs ReShade itself.
+//
+// Command line (also usable from scripts): --scan | --sync | --enable <exe stem> | --disable <exe stem> |
+// --monitor-on <exe stem> | --monitor-off <exe stem> | --notes | --home
 // (--notes rewrites the comment block on top of every per-game cfg without touching the settings in it)
 // Author: LowPopLabs
 #define WIN32_LEAN_AND_MEAN
@@ -26,7 +32,7 @@
 #include <fcntl.h>
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
-#define SETUP_VERSION L"0.2.0"
+#define SETUP_VERSION L"0.3.0"
 using std::wstring;
 
 struct Game
@@ -34,14 +40,18 @@ struct Game
     wstring name, dir, stem, pluginDir;
     bool openxr = false, openvr = false, unity = false;
     bool xrEnabled = false, vrInstalled = false, cfgOff = false;
+    wstring rsProxy;            // ReShade's proxy DLL in the game folder (dxgi.dll, d3d11.dll or d3d12.dll); empty = no ReShade there
+    bool rsOn = false;          // that DLL is live (not parked as <name>.reshade-off)
     wstring api() const { return openxr && openvr ? L"OpenXR (+OpenVR)" : openxr ? L"OpenXR" : openvr ? L"OpenVR" : L"-"; }
     bool usesXr() const { return openxr; }
+    bool headsetOn() const { return openxr ? xrEnabled : vrInstalled; }
     wstring status() const
     {
-        if (openxr) return xrEnabled ? L"enabled" : cfgOff ? L"off (settings kept)" : L"off";
-        if (openvr) return vrInstalled ? (xrEnabled ? L"installed" : L"installed (no cfg)") : cfgOff ? L"off (settings kept)" : L"off";
+        if (openxr) return xrEnabled ? L"on" : cfgOff ? L"off (settings kept)" : L"off";
+        if (openvr) return vrInstalled ? (xrEnabled ? L"on" : L"on (no cfg)") : cfgOff ? L"off (settings kept)" : L"off";
         return L"not a VR game";
     }
+    wstring monitor() const { return rsProxy.empty() ? L"no ReShade" : rsOn ? L"on (" + rsProxy + L")" : L"off (parked)"; }
 };
 
 static wstring g_setupDir, g_home;
@@ -147,6 +157,28 @@ static wstring DetectStem(const wstring &dir, bool *unity)
     if (unity) *unity = s.unity;
     return s.stem;
 }
+// ---------------------------------------------------------------- the monitor side: ReShade in the game folder
+// ReShade's own DLL carries its name in its strings (ANSI and UTF-16); other DXGI/D3D proxies (DXVK, Special K) do not
+static bool IsReShadeDll(const wstring &p)
+{
+    const std::string t = ReadFile(p);
+    if (t.find("ReShade") != std::string::npos) return true;
+    static const char w[] = { 'R', 0, 'e', 0, 'S', 0, 'h', 0, 'a', 0, 'd', 0, 'e', 0 };
+    return t.find(std::string(w, sizeof(w))) != std::string::npos;
+}
+static const wchar_t *kReShadeProxies[] = { L"dxgi.dll", L"d3d11.dll", L"d3d12.dll" };
+static const wchar_t kParkedSuffix[] = L".reshade-off";   // same convention as disable-reshade.cmd
+static void DetectReShade(Game &g)
+{
+    g.rsProxy.clear(); g.rsOn = false;
+    for (const wchar_t *n : kReShadeProxies)
+    {
+        const wstring live = Join(g.dir, n);
+        if (Exists(live) && IsReShadeDll(live)) { g.rsProxy = n; g.rsOn = true; return; }
+        if (Exists(live + kParkedSuffix)) { g.rsProxy = n; g.rsOn = false; return; }
+    }
+}
+
 static void Detect(Game &g)
 {
     g.stem = DetectStem(g.dir, &g.unity);
@@ -163,6 +195,7 @@ static void Detect(Game &g)
     const wstring cfg = GameCfg(g);
     g.xrEnabled = Exists(cfg); g.cfgOff = Exists(cfg + L".off");
     g.vrInstalled = g.openvr && Exists(Join(g.pluginDir, L"openvr_api.orig.dll"));
+    DetectReShade(g);
 }
 
 static wstring FoldersFile() { return Join(g_home, L"folders.txt"); }
@@ -328,8 +361,9 @@ static std::string KnownGameNotes(const wstring &stemLower)
         "# - One pass mostly changes lighting; face and skin detail need passes=2 (fine detail does not survive a 0.6-scale\n"
         "#   upsample, a second pass compounds it). Each pass costs about 3.9 ms per megapixel the model sees.\n"
         "# - preset 1 (what RenoDX used) costs the same as 0 and the presets were found to be inert; style 0/1/2 cost the same.\n"
-        "# - If ReShade's dxgi.dll and renodx-dlss.addon64 are still in the game folder, park them (disable-reshade.cmd in the\n"
-        "#   package): they spend a Neural Rendering pass on the desktop mirror every frame and cap the game around 60 Hz.\n"
+        "# - ReShade's dxgi.dll and renodx-dlss.addon64 in the game folder are the MONITOR side (DLSS 5 on the desktop window,\n"
+        "#   for recording). With the headset on too they spend a Neural Rendering pass on the mirror every frame and cap the\n"
+        "#   game around 60 Hz: press Monitor off in the installer while playing, Monitor on (and Headset off) to record.\n"
         "# - Unity gives the bridge no depth buffer and no engine motion vectors: depth_value is a constant and mv=1 uses head\n"
         "#   rotation only, so very near objects can ghost slightly while the head translates.\n";
     if (stemLower == L"boneworks") return
@@ -351,7 +385,7 @@ static std::string KnownGameNotes(const wstring &stemLower)
         "# - Launch through Steam. The log should show \"hooked IVRCompositor_022 ... Submit slot 5\", \"direct engine ACTIVE\" and\n"
         "#   a \"pair L ... R ...\" line; a few \"VR_InitInternal ... err 108\" (HmdNotFound) lines before SteamVR is up are harmless.\n"
         "# - The bridge is the openvr_api.dll in BONEWORKS_Data\\Plugins, next to the game's own openvr_api.orig.dll. Steam's\n"
-        "#   \"verify integrity of game files\" puts the game's DLL back; press Enable in the installer again afterwards.\n";
+        "#   \"verify integrity of game files\" puts the game's DLL back; press Headset on in the installer again afterwards.\n";
     return "";
 }
 
@@ -363,9 +397,12 @@ static std::string NotesBlock(const wstring &stem)
     std::string t = kNotesBegin + (g ? Narrow(g->name) + " (" + s + ".exe)" : s + ".exe") + " ====\n"
         "# This file holds EVERY setting for this game. The installer wrote it when the game was enabled, as a copy of the\n"
         "# global nr-bridge.cfg (which only seeds new games), so tuning here never affects another game. Its presence\n"
-        "# enables the bridge for this exe; the installer renames it to .off to disable. Saved changes apply in-game within a\n"
-        "# second (or press F9); F10 toggles the effect for an A/B. The installer rewrites this notes block on every run and\n"
-        "# never touches the settings below it.\n#\n";
+        "# enables the bridge for this exe (Headset on); the installer renames it to .off for Headset off. Saved changes apply\n"
+        "# in-game within a second (or press F9); F10 toggles the effect for an A/B. The installer rewrites this notes block\n"
+        "# on every run and never touches the settings below it.\n"
+        "# Monitor on/off in the installer is a separate switch and does not use this file: it restores or parks ReShade's\n"
+        "# proxy DLL (dxgi.dll / d3d11.dll / d3d12.dll) in the game folder, which is what runs DLSS 5 on the desktop window\n"
+        "# through the RenoDX add-on (DirectX 11/12) for recording. Headset off + Monitor on = the monitor only.\n#\n";
     if (g)
     {
         t += "# Game: " + Narrow(g->name) + "  |  exe: " + s + ".exe  |  API: " + Narrow(g->api()) + (g->unity ? "  |  engine: Unity" : "") + "\n";
@@ -387,7 +424,7 @@ static std::string NotesBlock(const wstring &stem)
         if (!g || g->openvr)
             t += "# OpenVR: the proxy openvr_api.dll hooks IVRCompositor::Submit; the log should show \"hooked IVRCompositor_0xx\" and\n"
                  "#   \"direct engine ACTIVE\". MSAA or non-D3D11 eye textures are passed through untouched (the log says so). Steam's\n"
-                 "#   \"verify integrity of game files\" puts the game's own DLL back: press Enable again afterwards. If the game has an\n"
+                 "#   \"verify integrity of game files\" puts the game's own DLL back: press Headset on again afterwards. If the game has an\n"
                  "#   adaptive or dynamic resolution option, turn it off before judging image quality, or set viewport_ref to the\n"
                  "#   \"viewport N% of max\" the log reports.\n";
         if (!g || g->unity)
@@ -483,7 +520,8 @@ static bool Enable(Game &g, wstring &msg)
     if (Exists(off) && !Exists(cfg)) MoveFileW(off.c_str(), cfg.c_str());
     if (!Exists(cfg)) WriteFile(cfg, FullGameCfg(g.stem, ""));
     wstring note; EnsureModel(note);
-    msg = g.openxr ? L"enabled (OpenXR layer)" : L"proxy installed into " + g.pluginDir; if (!note.empty()) msg += L"; " + note;
+    msg = g.openxr ? L"headset on (OpenXR layer)" : L"headset on (proxy installed into " + g.pluginDir + L")"; if (!note.empty()) msg += L"; " + note;
+    if (g.rsOn) msg += L"; ReShade on the monitor is still on (press Monitor off to stop the mirror pass)";
     Detect(g);
     return true;
 }
@@ -496,13 +534,35 @@ static bool Disable(Game &g, wstring &msg)
         if (Exists(orig)) { DeleteFileW(cur.c_str()); if (!MoveFileW(orig.c_str(), cur.c_str())) { msg = L"could not restore the game's openvr_api.dll (is the game running?)"; return false; } }
     }
     if (Exists(cfg)) { DeleteFileW(off.c_str()); MoveFileW(cfg.c_str(), off.c_str()); }
-    msg = L"disabled (settings kept as " + Leaf(off) + L")";
+    msg = L"headset off (settings kept as " + Leaf(off) + L")";
+    if (g.rsOn) msg += L"; ReShade on the monitor stays on";
     Detect(g);
+    return true;
+}
+// the monitor side is independent of the headset side: both on = DLSS 5 in the headset AND on the mirror window (the
+// mirror pass costs GPU time every frame), headset off + monitor on = the monitor only, for recording
+static bool MonitorOn(Game &g, wstring &msg)
+{
+    if (g.rsProxy.empty()) { msg = L"no ReShade in " + g.dir + L" (install ReShade with the RenoDX DLSS add-on there first)"; return false; }
+    const wstring live = Join(g.dir, g.rsProxy), parked = live + kParkedSuffix;
+    if (!g.rsOn && !MoveFileW(parked.c_str(), live.c_str())) { msg = L"could not restore " + g.rsProxy + L" (is the game running?)"; return false; }
+    Detect(g);
+    msg = L"monitor on: ReShade's " + g.rsProxy + L" is active again";
+    if (g.headsetOn()) msg += L" (the headset is on too: the mirror pass costs GPU time every frame)";
+    return true;
+}
+static bool MonitorOff(Game &g, wstring &msg)
+{
+    if (g.rsProxy.empty()) { msg = L"no ReShade in " + g.dir + L", nothing to park"; return false; }
+    const wstring live = Join(g.dir, g.rsProxy), parked = live + kParkedSuffix;
+    if (g.rsOn) { DeleteFileW(parked.c_str()); if (!MoveFileW(live.c_str(), parked.c_str())) { msg = L"could not park " + g.rsProxy + L" (is the game running?)"; return false; } }
+    Detect(g);
+    msg = L"monitor off: ReShade's " + g.rsProxy + L" is parked as " + g.rsProxy + kParkedSuffix + L" (nothing loads on the desktop window)";
     return true;
 }
 
 // ---------------------------------------------------------------- GUI
-enum { ID_LIST = 100, ID_ENABLE, ID_DISABLE, ID_SETTINGS, ID_GLOBAL, ID_LOGS, ID_ADD, ID_RESCAN, ID_HEAD, ID_STATUS };
+enum { ID_LIST = 100, ID_ENABLE, ID_DISABLE, ID_MON_ON, ID_MON_OFF, ID_SETTINGS, ID_GLOBAL, ID_LOGS, ID_ADD, ID_RESCAN, ID_HEAD, ID_STATUS };
 static HWND g_wnd, g_list, g_head, g_statusBar;
 static void SetStatus(const wstring &s) { SetWindowTextW(g_statusBar, s.c_str()); }
 static void FillList()
@@ -514,25 +574,26 @@ static void FillList()
         LVITEMW it = {}; it.mask = LVIF_TEXT | LVIF_PARAM; it.iItem = (int)i; it.pszText = (LPWSTR)g.name.c_str(); it.lParam = (LPARAM)i;
         ListView_InsertItem(g_list, &it);
         // the macro sends the message in a separate statement, so the strings must outlive the temporaries
-        const wstring api = g.api(), st = g.status();
+        const wstring api = g.api(), st = g.status(), mon = g.monitor();
         ListView_SetItemText(g_list, (int)i, 1, (LPWSTR)api.c_str());
         ListView_SetItemText(g_list, (int)i, 2, (LPWSTR)st.c_str());
-        ListView_SetItemText(g_list, (int)i, 3, (LPWSTR)g.stem.c_str());
-        ListView_SetItemText(g_list, (int)i, 4, (LPWSTR)g.dir.c_str());
+        ListView_SetItemText(g_list, (int)i, 3, (LPWSTR)mon.c_str());
+        ListView_SetItemText(g_list, (int)i, 4, (LPWSTR)g.stem.c_str());
+        ListView_SetItemText(g_list, (int)i, 5, (LPWSTR)g.dir.c_str());
     }
     g_headline = L"Central install: " + g_home + L"   |   OpenXR layer " + (Registered() ? L"registered for " : L"NOT registered for ") + _wgetenv(L"USERNAME") +
                  (Exists(Join(g_home, L"nvngx_dlssnr.dll")) ? L"   |   model DLL present" : L"   |   model DLL MISSING (enable a game that has it, e.g. BONELAB)");
     SetWindowTextW(g_head, g_headline.c_str());
 }
 static int Selected() { return ListView_GetNextItem(g_list, -1, LVNI_SELECTED); }
-static void Rescan() { SetStatus(L"scanning Steam libraries..."); ScanGames(); FillList(); SetStatus(std::to_wstring(g_games.size()) + L" VR games found. Select one and press Enable or Disable; double-click for its settings."); }
+static void Rescan() { SetStatus(L"scanning Steam libraries..."); ScanGames(); FillList(); SetStatus(std::to_wstring(g_games.size()) + L" VR games found. Select one: Headset on/off = DLSS 5 in the headset (this bridge), Monitor on/off = DLSS 5 on the desktop window (ReShade + RenoDX, for recording); double-click for its settings."); }
 static void Layout(HWND w)
 {
     RECT r; GetClientRect(w, &r); const int W = r.right, H = r.bottom;
     MoveWindow(g_head, 10, 8, W - 20, 36, TRUE);
     MoveWindow(g_list, 10, 48, W - 20, H - 48 - 44 - 30, TRUE);
     const int y = H - 30 - 36; int x = 10;
-    for (int id : { ID_ENABLE, ID_DISABLE, ID_SETTINGS, ID_GLOBAL, ID_LOGS, ID_ADD, ID_RESCAN }) { MoveWindow(GetDlgItem(w, id), x, y, 108, 28, TRUE); x += 114; }
+    for (int id : { ID_ENABLE, ID_DISABLE, ID_MON_ON, ID_MON_OFF, ID_SETTINGS, ID_GLOBAL, ID_LOGS, ID_ADD, ID_RESCAN }) { MoveWindow(GetDlgItem(w, id), x, y, 104, 28, TRUE); x += 110; }
     MoveWindow(g_statusBar, 10, H - 26, W - 20, 22, TRUE);
 }
 static void OpenInNotepad(const wstring &p) { ShellExecuteW(nullptr, L"open", L"notepad.exe", (L"\"" + p + L"\"").c_str(), nullptr, SW_SHOWNORMAL); }
@@ -545,9 +606,9 @@ static LRESULT CALLBACK WndProc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         g_head = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, w, (HMENU)ID_HEAD, nullptr, nullptr);
         g_list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, 0, 0, 0, 0, w, (HMENU)ID_LIST, nullptr, nullptr);
         ListView_SetExtendedListViewStyle(g_list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
-        const struct { const wchar_t *t; int wdt; } cols[] = { { L"Game", 230 }, { L"API", 120 }, { L"Bridge", 150 }, { L"Exe", 200 }, { L"Folder", 420 } };
-        for (int i = 0; i < 5; ++i) { LVCOLUMNW c = {}; c.mask = LVCF_TEXT | LVCF_WIDTH; c.pszText = (LPWSTR)cols[i].t; c.cx = cols[i].wdt; ListView_InsertColumn(g_list, i, &c); }
-        const struct { int id; const wchar_t *t; } btns[] = { { ID_ENABLE, L"Enable" }, { ID_DISABLE, L"Disable" }, { ID_SETTINGS, L"Game settings" }, { ID_GLOBAL, L"Global settings" }, { ID_LOGS, L"Logs folder" }, { ID_ADD, L"Add folder..." }, { ID_RESCAN, L"Rescan" } };
+        const struct { const wchar_t *t; int wdt; } cols[] = { { L"Game", 220 }, { L"API", 110 }, { L"Headset (nr-bridge)", 130 }, { L"Monitor (ReShade)", 130 }, { L"Exe", 180 }, { L"Folder", 380 } };
+        for (int i = 0; i < 6; ++i) { LVCOLUMNW c = {}; c.mask = LVCF_TEXT | LVCF_WIDTH; c.pszText = (LPWSTR)cols[i].t; c.cx = cols[i].wdt; ListView_InsertColumn(g_list, i, &c); }
+        const struct { int id; const wchar_t *t; } btns[] = { { ID_ENABLE, L"Headset on" }, { ID_DISABLE, L"Headset off" }, { ID_MON_ON, L"Monitor on" }, { ID_MON_OFF, L"Monitor off" }, { ID_SETTINGS, L"Game settings" }, { ID_GLOBAL, L"Global settings" }, { ID_LOGS, L"Logs folder" }, { ID_ADD, L"Add folder..." }, { ID_RESCAN, L"Rescan" } };
         for (auto &b : btns) CreateWindowW(L"BUTTON", b.t, WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 0, 0, w, (HMENU)(INT_PTR)b.id, nullptr, nullptr);
         g_statusBar = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, w, (HMENU)ID_STATUS, nullptr, nullptr);
         HFONT f = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
@@ -555,7 +616,7 @@ static LRESULT CALLBACK WndProc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_SIZE: Layout(w); return 0;
-    case WM_GETMINMAXINFO: ((MINMAXINFO *)lp)->ptMinTrackSize = { 900, 400 }; return 0;
+    case WM_GETMINMAXINFO: ((MINMAXINFO *)lp)->ptMinTrackSize = { 1020, 400 }; return 0;
     case WM_NOTIFY:
         if (((LPNMHDR)lp)->idFrom == ID_LIST && ((LPNMHDR)lp)->code == NM_DBLCLK) SendMessageW(w, WM_COMMAND, ID_SETTINGS, 0);
         return 0;
@@ -564,11 +625,18 @@ static LRESULT CALLBACK WndProc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         const int id = LOWORD(wp), sel = Selected();
         Game *g = sel >= 0 && sel < (int)g_games.size() ? &g_games[sel] : nullptr;
         wstring msg;
+        // one of the four switches on the selected game, then the list is refreshed with the row kept selected
+        auto toggle = [&](bool (*fn)(Game &, wstring &)) {
+            if (!g) { SetStatus(L"select a game first"); return; }
+            fn(*g, msg); FillList(); ListView_SetItemState(g_list, sel, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED); SetStatus(g->name + L": " + msg);
+        };
         switch (id)
         {
-        case ID_ENABLE: if (!g) { SetStatus(L"select a game first"); break; } Enable(*g, msg); FillList(); ListView_SetItemState(g_list, sel, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED); SetStatus(g->name + L": " + msg); break;
-        case ID_DISABLE: if (!g) { SetStatus(L"select a game first"); break; } Disable(*g, msg); FillList(); ListView_SetItemState(g_list, sel, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED); SetStatus(g->name + L": " + msg); break;
-        case ID_SETTINGS: if (!g) { SetStatus(L"select a game first"); break; } if (!Exists(GameCfg(*g))) { SetStatus(g->name + L" is not enabled: enable it first (that creates its own complete settings file)"); break; } OpenInNotepad(GameCfg(*g)); SetStatus(L"editing " + GameCfg(*g) + L" (this game only; saved changes apply live in-game)"); break;
+        case ID_ENABLE: toggle(Enable); break;
+        case ID_DISABLE: toggle(Disable); break;
+        case ID_MON_ON: toggle(MonitorOn); break;
+        case ID_MON_OFF: toggle(MonitorOff); break;
+        case ID_SETTINGS: if (!g) { SetStatus(L"select a game first"); break; } if (!Exists(GameCfg(*g))) { SetStatus(g->name + L": press Headset on first (that creates its own complete settings file)"); break; } OpenInNotepad(GameCfg(*g)); SetStatus(L"editing " + GameCfg(*g) + L" (this game only; saved changes apply live in-game)"); break;
         case ID_GLOBAL: OpenInNotepad(Join(g_home, L"nr-bridge.cfg")); SetStatus(L"editing the defaults for NEWLY enabled games (each enabled game has its own complete cfg: use Game settings)"); break;
         case ID_LOGS: ShellExecuteW(nullptr, L"open", Join(g_home, L"logs").c_str(), nullptr, nullptr, SW_SHOWNORMAL); break;
         case ID_ADD:
@@ -607,20 +675,23 @@ static int Cli(int argc, wchar_t **argv)
     if (cmd == L"--notes") { RefreshGameNotes(notes); for (auto &n : notes) Print(L"  " + n + L"\n"); Print(notes.empty() ? L"every per-game cfg already carries the current notes\n" : L"done\n"); return 0; }
     if (cmd == L"--scan")
     {
-        Print(L"home: " + g_home + L" (layer " + (Registered() ? L"registered" : L"not registered") + L")\n" + Pad(L"game", 34) + Pad(L"api", 18) + Pad(L"bridge", 22) + Pad(L"exe", 32) + L"folder\n");
-        for (const Game &g : g_games) Print(Pad(g.name, 34) + Pad(g.api(), 18) + Pad(g.status(), 22) + Pad(g.stem, 32) + g.dir + L"\n");
+        Print(L"home: " + g_home + L" (layer " + (Registered() ? L"registered" : L"not registered") + L")\n" + Pad(L"game", 34) + Pad(L"api", 18) + Pad(L"headset", 22) + Pad(L"monitor", 18) + Pad(L"exe", 32) + L"folder\n");
+        for (const Game &g : g_games) Print(Pad(g.name, 34) + Pad(g.api(), 18) + Pad(g.status(), 22) + Pad(g.monitor(), 18) + Pad(g.stem, 32) + g.dir + L"\n");
         return 0;
     }
-    if ((cmd == L"--enable" || cmd == L"--disable") && argc > 2)
+    const struct { const wchar_t *cmd; bool (*fn)(Game &, wstring &); } switches[] = { { L"--enable", Enable }, { L"--disable", Disable }, { L"--monitor-on", MonitorOn }, { L"--monitor-off", MonitorOff } };
+    for (const auto &s : switches)
     {
+        if (cmd != s.cmd || argc < 3) continue;
         for (Game &g : g_games) if (Lower(g.stem) == Lower(argv[2]) || Lower(g.name) == Lower(argv[2]))
         {
-            wstring msg; const bool ok = cmd == L"--enable" ? Enable(g, msg) : Disable(g, msg);
+            wstring msg; const bool ok = s.fn(g, msg);
             Print(g.name + L": " + msg + L"\n"); return ok ? 0 : 1;
         }
         Print(wstring(L"no VR game with exe or name '") + argv[2] + L"' (see --scan)\n"); return 2;
     }
-    Print(L"nr-bridge-setup " SETUP_VERSION L": --scan | --sync | --enable <exe stem or name> | --disable <exe stem or name> | --notes | --home\n");
+    Print(L"nr-bridge-setup " SETUP_VERSION L": --scan | --sync | --enable <exe stem or name> | --disable <exe stem or name> | --monitor-on <exe stem or name> | --monitor-off <exe stem or name> | --notes | --home\n"
+          L"  --enable/--disable = DLSS 5 in the headset (this bridge); --monitor-on/--monitor-off = DLSS 5 on the desktop window (parks or restores ReShade's proxy DLL in the game folder)\n");
     return 2;
 }
 

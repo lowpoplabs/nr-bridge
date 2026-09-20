@@ -21,7 +21,7 @@
 #include <cstring>
 #include <cmath>
 
-#define PROXY_VERSION "0.2.0"
+#define PROXY_VERSION "0.3.0"
 
 // ---------------------------------------------------------------- minimal OpenVR types (no SDK dependency)
 namespace vr

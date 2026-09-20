@@ -3,6 +3,27 @@
 All notable changes to nr-bridge (DLSS 5 Neural Rendering for VR games, by LowPopLabs). Versions cover the
 installer, the OpenXR layer and the OpenVR proxy together; they are released as one package.
 
+## 0.3.0 - 2026-09-20
+
+### Added
+- **Monitor on / Monitor off per game** in the installer, next to the headset switch. It restores or parks the ReShade
+  proxy DLL in the game folder (`dxgi.dll`, `d3d11.dll` or `d3d12.dll`, parked as `<name>.reshade-off`), which with the
+  RenoDX DLSS add-on runs DLSS 5 on the desktop window (DirectX 11/12). The two switches are independent, so a game can
+  be set to Headset on + Monitor off for playing in VR, or Headset off + Monitor on to record from the monitor with the
+  headset untouched. A new **Monitor (ReShade)** column shows `on (dxgi.dll)`, `off (parked)` or `no ReShade`; only a
+  DLL that really is ReShade is recognised, other DXGI/D3D proxies are left alone. The installer does not install ReShade.
+- Command line `--monitor-on <exe or name>` and `--monitor-off <exe or name>`; `--scan` prints the monitor column.
+- README section "Headset or monitor: the two switches per game".
+
+### Changed
+- The installer's **Enable / Disable** buttons are now **Headset on / Headset off**, and the **Bridge** column is
+  **Headset (nr-bridge)**, so the two switches read side by side. `--enable` / `--disable` keep their names for scripts.
+  Status messages say which side changed and warn when both sides are on (the mirror pass costs GPU time every frame).
+- The per-game notes block explains the monitor switch and refers to Headset on where it said Enable.
+- `disable-reshade.cmd` / `enable-reshade.cmd` handle `d3d11.dll` and `d3d12.dll` installs of ReShade too, not only
+  `dxgi.dll`, and match the installer's parked name.
+- Versions: installer, layer and proxy 0.3.0. The layer and proxy are unchanged apart from the version string.
+
 ## 0.2.1 - 2026-09-12
 
 First public release on GitHub — no functional changes.

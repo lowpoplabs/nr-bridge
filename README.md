@@ -70,7 +70,7 @@ The reshade engine is what was measured at 22 Hz: the add-on evaluated the mirro
 | `nr-bridge.cfg` | settings; an existing cfg is not overwritten on reinstall |
 | `install-bridge.cmd` | copies files to `<game>\nr-bridge\`, registers the layer for the current user (HKCU, no admin) |
 | `uninstall-bridge.cmd` | removes registration and folder |
-| `disable-reshade.cmd` / `enable-reshade.cmd` | park / restore the ReShade `dxgi.dll` in the game folder |
+| `disable-reshade.cmd` / `enable-reshade.cmd` | park / restore the ReShade proxy (`dxgi.dll`, `d3d11.dll` or `d3d12.dll`) in the game folder; the same thing as the installer's Monitor off / Monitor on |
 | `openvr\openvr_api.dll` + `install-openvr.cmd` / `uninstall-openvr.cmd` | the OpenVR front end for SteamVR-native games (see below) |
 
 ## Installer (nr-bridge-setup.exe) and the central layout
@@ -84,12 +84,17 @@ The reshade engine is what was measured at 22 Hz: the add-on evaluated the mirro
 - scans every Steam library (plus folders added by hand) and lists the VR games with their API: **OpenXR** (Unity
   boot.config names UnityOpenXR, or an `openxr_loader.dll` ships with the game) or **OpenVR** (`openvr_api.dll` in the
   plugin folder). Non-VR games that merely ship an OpenXR loader (some UE titles) can appear; enabling them is harmless.
-- **Enable** an OpenXR game = create `games\<exe>.cfg` (its presence activates the layer for that exe). Enable an
-  OpenVR game = rename its `openvr_api.dll` to `openvr_api.orig.dll`, drop the proxy in, create the cfg. **Disable**
+- **Headset on** for an OpenXR game = create `games\<exe>.cfg` (its presence activates the layer for that exe). For an
+  OpenVR game = rename its `openvr_api.dll` to `openvr_api.orig.dll`, drop the proxy in, create the cfg. **Headset off**
   reverses both and keeps the settings as `<exe>.cfg.off`. Every per-game cfg is a **complete, independent copy of all
   settings**, so tuning one game never touches another; the global cfg only seeds newly enabled games. **Game settings**
   opens that file (live), **Global settings** the seed, **Logs folder** the central logs (`nr-bridge-<exe>.log`). A
   per-game cfg written by an earlier build (only `enabled=1`) is expanded to a full copy the next time the installer runs.
+- **Monitor on / Monitor off** is the second, independent switch per game (see [Headset or monitor](#headset-or-monitor-the-two-switches-per-game)):
+  it restores or parks the ReShade proxy DLL in the game folder (`dxgi.dll`, `d3d11.dll` or `d3d12.dll`, parked as
+  `<name>.reshade-off`), which with the RenoDX add-on is what runs DLSS 5 on the **desktop window** (DirectX 11/12).
+  The **Monitor (ReShade)** column shows `on (dxgi.dll)`, `off (parked)` or `no ReShade` (the installer never installs
+  ReShade itself; only a DLL that really is ReShade is recognised, so DXVK or Special K proxies are left alone).
 - Every per-game cfg starts with a **notes block**: what the file is, the game's exe, API, folder and log path, and what
   was learned tuning that game (BONELAB and BONEWORKS so far, with their measured settings and frame rates; generic
   OpenXR / OpenVR / Unity guidance for a game nobody has tuned yet). The installer rewrites that block on every run
@@ -101,16 +106,39 @@ The reshade engine is what was measured at 22 Hz: the add-on evaluated the mirro
   with the model's cost added it settles at a much lower game resolution, which reads as blur, and an F10 A/B is then
   unfair (bypassing lets the game climb back to full resolution). Turn Adaptive Resolution off in the game's graphics
   options before judging image quality, or set `viewport_ref` to the "viewport N% of max" the log reports.
-- Command line for scripts: `--scan`, `--sync`, `--enable <exe or name>`, `--disable <exe or name>`, `--notes`, `--home`.
+- Command line for scripts: `--scan`, `--sync`, `--enable <exe or name>`, `--disable <exe or name>` (headset),
+  `--monitor-on <exe or name>`, `--monitor-off <exe or name>`, `--notes`, `--home`.
   `NR_BRIDGE_HOME` overrides the home folder (tests). Both DLLs find the home through
   `HKCU\Software\LowPopLabs\nr-bridge\Home`; without it they run standalone as before (cfg and log next to the DLL).
 
 The `.cmd` scripts below still work for a standalone install without the installer.
 
+## Headset or monitor: the two switches per game
+
+DLSS 5 can run in two places in a VR game, and they are separate installs with separate costs:
+
+| switch | what runs | where the picture is processed |
+|---|---|---|
+| **Headset** (this bridge) | the OpenXR layer or the OpenVR proxy | the eye pair the headset shows |
+| **Monitor** (ReShade + the RenoDX DLSS add-on in the game folder) | ReShade's `dxgi.dll` / `d3d11.dll` / `d3d12.dll` proxy | the desktop mirror window (DirectX 11/12), which is what a recording captures |
+
+The installer switches each one per game without touching the other, so a game can be set up for playing or for
+recording in two clicks:
+
+- **Playing in VR:** Headset on, Monitor off. With ReShade left on as well, the add-on spends a Neural Rendering pass
+  on the mirror every frame on top of the bridge's, which capped BONELAB around 60 Hz.
+- **Recording from the monitor:** Headset off, Monitor on. The headset shows the untouched game and the desktop window
+  gets the full RenoDX treatment for the capture.
+- Both on works, at the combined GPU cost; both off leaves the game as shipped.
+
+Monitor off only renames the proxy DLL to `<name>.reshade-off` in the game folder; Monitor on renames it back. ReShade's
+ini, presets and the add-on file stay where they are, so nothing has to be reconfigured. Switch while the game is
+closed: a running game holds the DLL and the installer reports "is the game running?".
+
 ## Install on the gaming PC (as the account that plays, no admin)
 
 1. Copy the `dist` folder over and run `install-bridge.cmd`.
-2. Run `disable-reshade.cmd` so ReShade and the RenoDX add-on stay out of the process (otherwise they still spend a Neural Rendering pass on the mirror window and cap the game around 60 Hz).
+2. Run `disable-reshade.cmd` (or press **Monitor off** in the installer) so ReShade and the RenoDX add-on stay out of the process while playing in VR (otherwise they still spend a Neural Rendering pass on the mirror window and cap the game around 60 Hz). `enable-reshade.cmd` / **Monitor on** brings them back for recording from the monitor.
 3. Launch BONELAB. `nr-bridge\nr-bridge-BONELAB_Steam_Windows64.log` (every log is named after the game exe, so logs
    from different games never overwrite each other) should show, in order: `negotiate ok`, `xrCreateApiLayerInstance ... ACTIVE`, `direct: core Init_Ext ... Success`, `parameter block slots ... confirmed`, `xrCreateSession ... DIRECT ACTIVE`, `direct: eye pair WxH, NR work wxh`, then either `core CreateFeature(18) ... Success` or `core ... OutOfDate` followed by `snippet CreateFeature(18) ... Success`, then per-frame lines.
 4. **F10** toggles the effect for A/B. Tune in the cfg and restart the game.
