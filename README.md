@@ -19,7 +19,7 @@ Two engines, chosen by `mode=` in `nr-bridge.cfg`:
 The reshade engine is what was measured at 22 Hz: the add-on evaluated the mirror *and* the eye pair, with dummy motion data. Direct mode exists to fix both: one evaluation, at a chosen size, with real rotation vectors, and the desktop mirror left alone.
 
 <!-- lpl:links -->
-**[Download v0.2.1](https://github.com/lowpoplabs/nr-bridge/releases/latest)** · **[Changelog](CHANGELOG.md)** · **[Ko-fi](https://ko-fi.com/lowpoplabs)**
+**[Download v0.3.0](https://github.com/lowpoplabs/nr-bridge/releases/latest)** · **[Changelog](CHANGELOG.md)** · **[Ko-fi](https://ko-fi.com/lowpoplabs)**
 <!-- /lpl:links -->
 
 ## How direct mode gets its speed and its sharpness
